@@ -2,81 +2,107 @@ package com.anyapk.installer
 
 import android.content.Context
 import io.github.muntashirakon.adb.AdbStream
+import io.github.muntashirakon.adb.AbsAdbConnectionManager
 import kotlinx.coroutines.*
 
 object AdbInstaller {
 
     private const val LOCALHOST = "127.0.0.1"
-    private const val DEFAULT_PORT = 5555
+    private const val CONNECTION_CHECK_CACHE_MS = 2000L
+    private const val INSTALL_OUTPUT_POLL_MS = 100L
+    private const val INSTALL_OUTPUT_MAX_WAIT_MS = 120000L
+    private const val INSTALL_OUTPUT_SETTLE_MS = 1000L
+    private const val NO_INSTALL_OUTPUT_MESSAGE = "Device returned no output during package install."
+    private const val NO_COMMAND_OUTPUT_MESSAGE = "Command completed with no output."
 
-    enum class ConnectionStatus {
-        NOT_CONNECTED,
+    enum class ConnectionState {
         CONNECTED,
         NEEDS_PAIRING,
+        NEEDS_REMOTE_CONFIG,
+        NEEDS_AUTHORIZATION,
+        UNREACHABLE,
         ERROR
     }
 
-    // Keep track of connection state without constantly reconnecting
+    data class ConnectionReport(
+        val state: ConnectionState,
+        val message: String? = null
+    )
+
+    private data class StreamTranscript(
+        val text: String,
+        val timedOut: Boolean
+    )
+
     @Volatile
     private var lastConnectionCheck: Long = 0
     @Volatile
-    private var lastConnectionStatus: ConnectionStatus = ConnectionStatus.NEEDS_PAIRING
-    private const val CONNECTION_CHECK_CACHE_MS = 2000 // Cache for 2 seconds
+    private var lastConnectionStatus: ConnectionReport = ConnectionReport(ConnectionState.NEEDS_PAIRING)
+    @Volatile
+    private var lastTargetKey: String = ""
 
-    fun getConnectionStatus(context: Context, forceCheck: Boolean = false): ConnectionStatus {
-        // Use cached status if recent (unless forced)
+    fun getConnectionStatus(context: Context, target: AdbTarget, forceCheck: Boolean = false): ConnectionReport {
         val now = System.currentTimeMillis()
-        if (!forceCheck && (now - lastConnectionCheck) < CONNECTION_CHECK_CACHE_MS) {
+        val targetKey = target.cacheKey()
+        if (!forceCheck && targetKey == lastTargetKey && (now - lastConnectionCheck) < CONNECTION_CHECK_CACHE_MS) {
             return lastConnectionStatus
         }
 
-        var stream: AdbStream? = null
-        val status = try {
-            val manager = AdbConnectionManager.getInstance(context)
-
-            // Try to auto-connect using service discovery (works after pairing)
-            if (!manager.autoConnect(context, 3000)) {
-                ConnectionStatus.NEEDS_PAIRING
-            } else {
-                // Actually test the connection with a simple command
+        val status = when {
+            !target.hasRemoteAddress() -> {
+                ConnectionReport(ConnectionState.NEEDS_REMOTE_CONFIG, "Enter a remote IP address.")
+            }
+            !target.isRemoteConfiguredForConnection() -> {
+                ConnectionReport(ConnectionState.NEEDS_REMOTE_CONFIG, "Enter the remote device's ADB port to connect.")
+            }
+            else -> {
                 try {
-                    stream = manager.openStream("shell:echo test")
-                    val buffer = ByteArray(128)
-                    val bytesRead = stream.openInputStream().read(buffer)
-                    stream.close()
-
-                    // If we got a response, we're connected and authorized
-                    if (bytesRead > 0) {
-                        ConnectionStatus.CONNECTED
-                    } else {
-                        ConnectionStatus.NEEDS_PAIRING
+                    withManager(context) { manager ->
+                        if (!connectToTarget(manager, context, target, 3000)) {
+                            if (target.isLocalhost()) {
+                                ConnectionReport(ConnectionState.NEEDS_PAIRING, "Enable wireless debugging and pair this device.")
+                            } else {
+                                ConnectionReport(
+                                    ConnectionState.UNREACHABLE,
+                                    buildString {
+                                        append("Couldn't reach ${target.remoteIp}:${target.remoteAdbPort}.")
+                                        if (target.remotePairingPort == null) {
+                                            append(" If this is a watch showing IP:5555, try Test Connection directly.")
+                                        }
+                                    }
+                                )
+                            }
+                        } else {
+                            runShellCheck(manager)
+                        }
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    try {
-                        stream?.close()
-                    } catch (ex: Exception) {
-                        ex.printStackTrace()
-                    }
-                    // Don't close manager here - let it be reused
-                    ConnectionStatus.NEEDS_PAIRING
+                    ConnectionReport(ConnectionState.ERROR, e.message ?: "Connection check failed.")
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            ConnectionStatus.NEEDS_PAIRING
         }
 
         lastConnectionCheck = now
         lastConnectionStatus = status
+        lastTargetKey = targetKey
         return status
     }
 
-    suspend fun pair(context: Context, pairingCode: String, pairingPort: Int): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun pair(context: Context, target: AdbTarget, pairingCode: String, pairingPortOverride: Int? = null): Result<Boolean> = withContext(Dispatchers.IO) {
         return@withContext try {
-            val manager = AdbConnectionManager.getInstance(context)
-            // Pair with the device
-            manager.pair(LOCALHOST, pairingPort, pairingCode)
+            val pairingPort = pairingPortOverride ?: target.remotePairingPort
+            if (pairingPort == null || pairingPort <= 0) {
+                return@withContext Result.failure(Exception("Missing pairing port"))
+            }
+            val host = if (target.isLocalhost()) LOCALHOST else target.remoteIp
+            if (host.isBlank()) {
+                return@withContext Result.failure(Exception("Missing target host"))
+            }
+            withManager(context) { manager ->
+                manager.pair(host, pairingPort, pairingCode)
+            }
+            invalidateCache()
             Result.success(true)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -84,155 +110,297 @@ object AdbInstaller {
         }
     }
 
-    suspend fun testConnection(context: Context): Result<Boolean> = withContext(Dispatchers.IO) {
-        var stream: AdbStream? = null
+    suspend fun testConnection(context: Context, target: AdbTarget): Result<Boolean> = withContext(Dispatchers.IO) {
         return@withContext try {
-            val manager = AdbConnectionManager.getInstance(context)
-
-            // Connect to local ADB - this should trigger authorization prompt
-            if (!manager.autoConnect(context, 10000)) {
-                return@withContext Result.failure(Exception("Could not connect to ADB. Make sure wireless debugging is enabled."))
+            if (!target.isRemoteConfiguredForConnection()) {
+                return@withContext Result.failure(Exception("Target is missing connection details."))
             }
-
-            // Try to execute a simple command to verify authorization
-            stream = manager.openStream("shell:echo test")
-            val output = StringBuilder()
-            val inputStream = stream.openInputStream()
-            val buffer = ByteArray(128)
-            var bytesRead: Int
-
-            // Read with timeout
-            var totalWait = 0
-            while (totalWait < 5000) {
-                if (inputStream.available() > 0) {
-                    bytesRead = inputStream.read(buffer)
-                    if (bytesRead > 0) {
-                        output.append(String(buffer, 0, bytesRead))
-                        break
+            val report = withManager(context) { manager ->
+                if (!connectToTarget(manager, context, target, 10000)) {
+                    if (target.isLocalhost()) {
+                        ConnectionReport(ConnectionState.NEEDS_PAIRING, "Could not connect to local ADB.")
+                    } else {
+                        ConnectionReport(ConnectionState.UNREACHABLE, "Could not reach ${target.remoteIp}:${target.remoteAdbPort}.")
                     }
+                } else {
+                    runShellCheck(manager)
                 }
-                kotlinx.coroutines.delay(100)
-                totalWait += 100
             }
-
-            stream.close()
-            manager.close()
-
-            if (output.contains("test")) {
-                Result.success(true)
-            } else {
-                Result.failure(Exception("Connection test failed. Did you authorize the prompt?"))
+            when (report.state) {
+                ConnectionState.CONNECTED -> {
+                    invalidateCache()
+                    Result.success(true)
+                }
+                ConnectionState.NEEDS_AUTHORIZATION -> Result.failure(Exception(report.message ?: "Authorization required."))
+                else -> Result.failure(Exception(report.message ?: "Connection test failed."))
             }
-
         } catch (e: Exception) {
             e.printStackTrace()
-            try {
-                stream?.close()
-            } catch (ex: Exception) {
-                ex.printStackTrace()
-            }
-            Result.failure(Exception("Authorization required. Check for 'Allow USB debugging?' prompt and tap 'Always allow'."))
+            Result.failure(Exception("Authorization required. Check the debugging prompt and try again."))
         }
     }
 
-    suspend fun install(context: Context, apkPath: String): Result<String> = withContext(Dispatchers.IO) {
-        var stream: AdbStream? = null
-        var manager: io.github.muntashirakon.adb.AbsAdbConnectionManager? = null
-        try {
-            // Invalidate cache before install attempt
-            lastConnectionCheck = 0
-
-            // Create a NEW manager instance for this install to avoid stale connections
-            manager = object : io.github.muntashirakon.adb.AbsAdbConnectionManager() {
-                private val delegate = AdbConnectionManager.getInstance(context)
-
-                override fun getPrivateKey() = delegate.getPrivateKey()
-                override fun getCertificate() = delegate.getCertificate()
-                override fun getDeviceName() = delegate.getDeviceName()
-            }
-            manager.setApi(android.os.Build.VERSION.SDK_INT)
-
-            // Connect to local ADB using auto-discovery
-            if (!manager.autoConnect(context, 10000)) {
-                return@withContext Result.failure(Exception("Failed to connect to ADB. Make sure wireless debugging is enabled and you've paired."))
+    suspend fun install(context: Context, target: AdbTarget, apkPath: String): Result<String> = withContext(Dispatchers.IO) {
+        return@withContext try {
+            if (!target.isRemoteConfiguredForConnection()) {
+                return@withContext Result.failure(Exception("Target is missing connection details."))
             }
 
-            // Use proper install protocol - stream the APK data
-            val apkFile = java.io.File(apkPath)
-            val apkSize = apkFile.length()
+            invalidateCache()
 
-            // Open install stream with size
-            stream = manager.openStream("exec:cmd package install -S $apkSize")
-
-            // Stream the APK data
-            val outputStream = stream.openOutputStream()
-            java.io.FileInputStream(apkFile).use { input ->
-                val buffer = ByteArray(8192)
-                var bytesRead: Int
-                while (input.read(buffer).also { bytesRead = it } != -1) {
-                    outputStream.write(buffer, 0, bytesRead)
+            val result = withManager(context) { manager ->
+                if (!connectToTarget(manager, context, target, 10000)) {
+                    return@withManager Result.failure(
+                        Exception(
+                            if (target.isLocalhost()) {
+                                "Failed to connect to local ADB. Make sure wireless debugging is enabled and you've paired."
+                            } else {
+                                "Failed to connect to ${target.remoteIp}:${target.remoteAdbPort}. Check the IP, ADB port, and pairing state."
+                            }
+                        )
+                    )
                 }
-                outputStream.flush()
-            }
 
-            // Read the response
-            val output = StringBuilder()
-            val inputStream = stream.openInputStream()
-            val buffer = ByteArray(1024)
-            var bytesRead: Int
-            var totalWait = 0
-            val maxWait = 30000 // 30 seconds for install
-
-            // Read with timeout
-            while (totalWait < maxWait) {
-                if (inputStream.available() > 0) {
-                    bytesRead = inputStream.read(buffer)
-                    if (bytesRead > 0) {
-                        output.append(String(buffer, 0, bytesRead))
+                val apkFile = java.io.File(apkPath)
+                val apkSize = apkFile.length()
+                var stream: AdbStream? = null
+                try {
+                    stream = manager.openStream("exec:cmd package install -S $apkSize")
+                    stream.openOutputStream().use { outputStream ->
+                        java.io.FileInputStream(apkFile).use { input ->
+                            val buffer = ByteArray(8192)
+                            var bytesRead: Int
+                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                outputStream.write(buffer, 0, bytesRead)
+                            }
+                            outputStream.flush()
+                        }
                     }
-                    if (bytesRead == -1) break
-                } else {
-                    kotlinx.coroutines.delay(100)
-                    totalWait += 100
-                    // Check if we got a complete response
-                    val currentOutput = output.toString()
-                    if (currentOutput.contains("Success") || currentOutput.contains("Failure")) {
-                        break
+
+                    val inputStream = stream.openInputStream()
+                    val transcript = readStreamTranscript(
+                        inputStream = inputStream,
+                        maxWaitMs = INSTALL_OUTPUT_MAX_WAIT_MS,
+                        terminalMarkers = listOf("Success", "Failure"),
+                        settleAfterTerminalMs = INSTALL_OUTPUT_SETTLE_MS
+                    )
+                    val installResult = transcript.text.ifEmpty {
+                        if (transcript.timedOut) {
+                            "Timed out waiting for package install output."
+                        } else {
+                            NO_INSTALL_OUTPUT_MESSAGE
+                        }
+                    }
+                    if (installResult.contains("Success", ignoreCase = true)) {
+                        invalidateCache(ConnectionReport(ConnectionState.CONNECTED), target.cacheKey())
+                        Result.success(installResult)
+                    } else if (transcript.timedOut) {
+                        Result.failure(Exception(formatInstallTimeoutMessage(installResult)))
+                    } else {
+                        Result.failure(Exception(installResult))
+                    }
+                } finally {
+                    try {
+                        stream?.close()
+                    } catch (ignored: Exception) {
                     }
                 }
             }
 
-            val result = output.toString().trim()
-            stream.close()
-
-            // Check for success
-            if (result.contains("Success", ignoreCase = true)) {
-                // Update cache to show we're still connected
-                lastConnectionCheck = System.currentTimeMillis()
-                lastConnectionStatus = ConnectionStatus.CONNECTED
-                Result.success("Installation successful")
-            } else {
-                Result.failure(Exception(result.ifEmpty { "Unknown error" }))
-            }
-
+            result
         } catch (e: Exception) {
             e.printStackTrace()
-            try {
-                stream?.close()
-            } catch (ex: Exception) {
-                ex.printStackTrace()
+            Result.failure(Exception(e.message ?: NO_INSTALL_OUTPUT_MESSAGE, e))
+        }
+    }
+
+    private fun formatInstallTimeoutMessage(output: String): String {
+        return if (output.isBlank() || output == "Timed out waiting for package install output.") {
+            "Timed out waiting for package install result."
+        } else {
+            "Timed out waiting for package install result. Partial output:\n$output"
+        }
+    }
+
+    suspend fun runShellCommand(context: Context, target: AdbTarget, command: String): Result<String> = withContext(Dispatchers.IO) {
+        val trimmedCommand = command.trim()
+        if (trimmedCommand.isEmpty()) {
+            return@withContext Result.failure(Exception("Enter a shell command to run."))
+        }
+        if (!target.isRemoteConfiguredForConnection()) {
+            return@withContext Result.failure(Exception("Target is missing connection details."))
+        }
+
+        return@withContext try {
+            withManager(context) { manager ->
+                if (!connectToTarget(manager, context, target, 10000)) {
+                    return@withManager Result.failure(
+                        Exception(
+                            if (target.isLocalhost()) {
+                                "Failed to connect to local ADB. Make sure wireless debugging is enabled and you've paired."
+                            } else {
+                                "Failed to connect to ${target.remoteIp}:${target.remoteAdbPort}. Check the IP, ADB port, and connection state."
+                            }
+                        )
+                    )
+                }
+
+                executeService(manager, "shell:$trimmedCommand", NO_COMMAND_OUTPUT_MESSAGE)
             }
-            try {
-                manager?.close()
-            } catch (ex: Exception) {
-                ex.printStackTrace()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Result.failure(Exception(e.message ?: "Command execution failed.", e))
+        }
+    }
+
+    private fun invalidateCache(
+        report: ConnectionReport = ConnectionReport(ConnectionState.NEEDS_PAIRING),
+        targetKey: String = ""
+    ) {
+        lastConnectionCheck = 0
+        lastConnectionStatus = report
+        lastTargetKey = targetKey
+    }
+
+    private fun runShellCheck(manager: AbsAdbConnectionManager): ConnectionReport {
+        var stream: AdbStream? = null
+        return try {
+            stream = manager.openStream("shell:echo test")
+            val buffer = ByteArray(128)
+            val inputStream = stream.openInputStream()
+            var totalWait = 0
+            while (totalWait < 5000) {
+                if (inputStream.available() > 0) {
+                    val bytesRead = inputStream.read(buffer)
+                    if (bytesRead > 0) {
+                        val output = String(buffer, 0, bytesRead)
+                        return if (output.contains("test")) {
+                            ConnectionReport(ConnectionState.CONNECTED)
+                        } else {
+                            ConnectionReport(ConnectionState.NEEDS_AUTHORIZATION, "Connected, but ADB authorization is still required.")
+                        }
+                    }
+                } else {
+                    Thread.sleep(100)
+                    totalWait += 100
+                }
             }
-            Result.failure(e)
+            ConnectionReport(ConnectionState.NEEDS_AUTHORIZATION, "Connected, but no shell response was returned.")
+        } catch (e: Exception) {
+            e.printStackTrace()
+            ConnectionReport(ConnectionState.NEEDS_AUTHORIZATION, "ADB authorization is required before installs can continue.")
         } finally {
             try {
-                manager?.close()
-            } catch (e: Exception) {
-                e.printStackTrace()
+                stream?.close()
+            } catch (ignored: Exception) {
+            }
+        }
+    }
+
+    private suspend fun executeService(
+        manager: AbsAdbConnectionManager,
+        destination: String,
+        emptyOutputFallback: String
+    ): Result<String> {
+        var stream: AdbStream? = null
+        return try {
+            stream = manager.openStream(destination)
+            val transcript = readStreamTranscript(
+                inputStream = stream.openInputStream(),
+                maxWaitMs = 15000L
+            )
+            val output = transcript.text.trim()
+            Result.success(
+                when {
+                    output.isNotEmpty() -> output
+                    transcript.timedOut -> "Timed out waiting for command output."
+                    else -> emptyOutputFallback
+                }
+            )
+        } catch (e: Exception) {
+            Result.failure(Exception(e.message ?: "Command execution failed.", e))
+        } finally {
+            try {
+                stream?.close()
+            } catch (ignored: Exception) {
+            }
+        }
+    }
+
+    private suspend fun readStreamTranscript(
+        inputStream: java.io.InputStream,
+        maxWaitMs: Long,
+        terminalMarkers: List<String> = emptyList(),
+        settleAfterTerminalMs: Long = 0L
+    ): StreamTranscript {
+        val output = StringBuilder()
+        val buffer = ByteArray(1024)
+        var totalWaitMs = 0L
+        var settleWaitMs = 0L
+
+        while (totalWaitMs < maxWaitMs) {
+            if (inputStream.available() > 0) {
+                val bytesRead = inputStream.read(buffer)
+                if (bytesRead == -1) {
+                    return StreamTranscript(output.toString().trim(), timedOut = false)
+                }
+                if (bytesRead > 0) {
+                    output.append(String(buffer, 0, bytesRead))
+                    settleWaitMs = 0L
+                }
+                continue
+            }
+
+            delay(INSTALL_OUTPUT_POLL_MS)
+            totalWaitMs += INSTALL_OUTPUT_POLL_MS
+
+            if (terminalMarkers.isEmpty() || settleAfterTerminalMs <= 0L) {
+                continue
+            }
+
+            val currentOutput = output.toString()
+            val hasTerminalMarker = terminalMarkers.any { marker ->
+                currentOutput.contains(marker, ignoreCase = true)
+            }
+            if (hasTerminalMarker) {
+                settleWaitMs += INSTALL_OUTPUT_POLL_MS
+                if (settleWaitMs >= settleAfterTerminalMs) {
+                    return StreamTranscript(currentOutput.trim(), timedOut = false)
+                }
+            }
+        }
+
+        return StreamTranscript(output.toString().trim(), timedOut = true)
+    }
+
+    private fun connectToTarget(
+        manager: AbsAdbConnectionManager,
+        context: Context,
+        target: AdbTarget,
+        timeoutMs: Long
+    ): Boolean {
+        return if (target.isLocalhost()) {
+            manager.autoConnect(context, timeoutMs)
+        } else {
+            manager.connect(target.remoteIp, target.remoteAdbPort ?: return false)
+        }
+    }
+
+    private inline fun <T> withManager(context: Context, block: (AbsAdbConnectionManager) -> T): T {
+        val manager = object : AbsAdbConnectionManager() {
+            private val delegate = AdbConnectionManager.getInstance(context)
+
+            override fun getPrivateKey() = delegate.getPrivateKey()
+            override fun getCertificate() = delegate.getCertificate()
+            override fun getDeviceName() = delegate.getDeviceName()
+        }
+        manager.setApi(android.os.Build.VERSION.SDK_INT)
+        return try {
+            block(manager)
+        } finally {
+            try {
+                manager.close()
+            } catch (ignored: Exception) {
             }
         }
     }

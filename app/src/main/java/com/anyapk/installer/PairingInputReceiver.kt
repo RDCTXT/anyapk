@@ -24,53 +24,50 @@ class PairingInputReceiver : BroadcastReceiver() {
         val remoteInput = RemoteInput.getResultsFromIntent(intent)
         if (remoteInput != null) {
             val input = remoteInput.getCharSequence(PairingInputService.KEY_PAIRING_INPUT)?.toString()
+            val target = AdbTargetStore.getTarget(context)
 
             if (input.isNullOrEmpty()) {
-                Toast.makeText(context, "Please enter code and port", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Please enter the pairing code information", Toast.LENGTH_SHORT).show()
                 return
             }
 
-            // Parse input format: "CODE PORT" (space-separated)
             val parts = input.trim().split("\\s+".toRegex())
-            if (parts.size != 2) {
-                Toast.makeText(
-                    context,
-                    "Invalid format. Use: CODE PORT (e.g., 123456 37829)",
-                    Toast.LENGTH_LONG
-                ).show()
-                return
-            }
-
             val code = parts[0]
-            val portInt = parts[1].toIntOrNull()
+            val portInt = when {
+                parts.size >= 2 -> parts[1].toIntOrNull()
+                target.isLocalhost() -> null
+                else -> target.remotePairingPort
+            }
 
             if (portInt == null || portInt <= 0) {
-                Toast.makeText(context, "Invalid port number", Toast.LENGTH_SHORT).show()
+                val message = if (target.isLocalhost()) {
+                    "Invalid format. Use: CODE PORT (e.g., 123456 37829)"
+                } else {
+                    "Missing or invalid pairing port. Enter CODE PORT, or use Test Connection for single-port devices like watches."
+                }
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 return
             }
 
-            // Show progress notification
-            showProgressNotification(context)
+            showProgressNotification(context, target)
 
-            // Perform pairing
             scope.launch {
-                val result = AdbInstaller.pair(context, code, portInt)
+                val result = AdbInstaller.pair(context, target, code, portInt)
 
                 result.onSuccess {
-                    showSuccessNotification(context)
+                    showSuccessNotification(context, target)
                     Toast.makeText(
                         context,
-                        "Pairing successful!",
+                        "Pairing successful for ${target.displayName()}!",
                         Toast.LENGTH_LONG
                     ).show()
 
-                    // Stop the service
                     val serviceIntent = Intent(context, PairingInputService::class.java)
                     context.stopService(serviceIntent)
                 }
 
                 result.onFailure { error ->
-                    showErrorNotification(context, error.message ?: "Unknown error")
+                    showErrorNotification(context, target, error.message ?: "Unknown error")
                     Toast.makeText(
                         context,
                         "Pairing failed: ${error.message}",
@@ -81,13 +78,13 @@ class PairingInputReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun showProgressNotification(context: Context) {
+    private fun showProgressNotification(context: Context, target: AdbTarget) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         val notification = NotificationCompat.Builder(context, PairingInputService.CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("Pairing...")
-            .setContentText("Connecting to device")
+            .setContentTitle("Pairing ${target.displayName()}...")
+            .setContentText("Connecting to ${target.displayName()}")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .build()
@@ -95,13 +92,13 @@ class PairingInputReceiver : BroadcastReceiver() {
         notificationManager.notify(PairingInputService.NOTIFICATION_ID, notification)
     }
 
-    private fun showSuccessNotification(context: Context) {
+    private fun showSuccessNotification(context: Context, target: AdbTarget) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         val notification = NotificationCompat.Builder(context, PairingInputService.CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("Pairing Successful!")
-            .setContentText("Device paired successfully")
+            .setContentText("${target.displayName()} paired successfully")
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .build()
@@ -109,12 +106,12 @@ class PairingInputReceiver : BroadcastReceiver() {
         notificationManager.notify(PairingInputService.NOTIFICATION_ID, notification)
     }
 
-    private fun showErrorNotification(context: Context, error: String) {
+    private fun showErrorNotification(context: Context, target: AdbTarget, error: String) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         val notification = NotificationCompat.Builder(context, PairingInputService.CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("Pairing Failed")
+            .setContentTitle("Pairing Failed for ${target.displayName()}")
             .setContentText(error)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)

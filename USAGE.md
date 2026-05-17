@@ -6,28 +6,36 @@
 
 ## First-Time Setup
 
-### Step 1: Enable Developer Options
+### Option A: Install on This Device
 1. Go to **Settings → About Phone**
 2. Tap **Build Number** 7 times
-3. You should see a message saying "You are now a developer"
+3. Go to **Settings → System → Developer Options**
+4. Turn **Wireless Debugging** on
+5. Open **anyapk**
+6. Select **This device**
+7. Tap **Start Pairing**
+8. In **Developer Options → Wireless Debugging**, tap **"Pair device with pairing code"**
+9. Reply to the anyapk notification with the code and port:
+   - Example: `123456 37829`
 
-### Step 2: Enable Wireless Debugging
-1. Go to **Settings → System → Developer Options**
-2. Scroll down and find **Wireless Debugging**
-3. Toggle it **ON**
-4. You should see an IP address and port number
+### Option B: Install on Another Device
+1. On the destination Android device, enable **Wireless Debugging**
+2. Note the destination device:
+   - IP address
+   - ADB port from the Wireless Debugging page
+   - pairing port, if the device offers a pairing-code dialog
+3. Open **anyapk**
+4. Select **Other device**
+5. Enter the destination IP and ADB port
+6. If the target provides a pairing-code dialog, also enter the pairing port
+7. If the target is a watch that only shows `IP:5555`, leave pairing port empty
+8. Save the remote target
+9. For pairing-code devices, tap **Start Pairing**
+10. For single-port devices like watches, tap **Test Connection**
+11. If pairing was started, reply to the anyapk notification with the pairing code shown on the destination device
 
-### Step 3: Pair anyapk with ADB
-1. Open the **anyapk** app
-2. Tap **"Open Developer Settings"** to verify wireless debugging is enabled
-3. In **Developer Options → Wireless Debugging**, tap **"Pair device with pairing code"**
-4. You'll see a 6-digit code and a port number
-5. Return to the anyapk app and tap **"Enter Pairing Code"**
-6. Enter the 6-digit code and port number
-7. Tap **"Pair"**
-
-### Step 4: You're Done!
-Once paired successfully, you'll see a green checkmark indicating anyapk is ready to install APKs.
+### You're Done
+Once paired successfully, anyapk is ready to install APKs to the currently selected target.
 
 ## Using anyapk to Install APKs
 
@@ -48,7 +56,7 @@ Once paired successfully, you'll see a green checkmark indicating anyapk is read
 ## Important Notes
 
 ### Wireless Debugging Must Stay Enabled
-- For anyapk to work, **Wireless Debugging must remain enabled** in Developer Options
+- For anyapk to work, **Wireless Debugging must remain enabled** on whichever device is the current install target
 - If you disable it, you'll need to pair again
 
 ### One-Time Pairing
@@ -75,6 +83,9 @@ Once paired successfully, you'll see a green checkmark indicating anyapk is read
 - Enable Wireless Debugging in Developer Options
 - Make sure your device isn't in power-saving mode (it can disable wireless debugging)
 - Try toggling Wireless Debugging off and back on
+- For remote targets, confirm the ADB port is correct
+- Only pairing-code devices need a pairing port
+- Watches that show only `IP:5555` should use direct `Test Connection`
 
 ### anyapk doesn't appear when opening an APK
 - Make sure you completed the pairing successfully
@@ -116,8 +127,9 @@ Since anyapk itself will need developer verification to be widely distributed, c
 
 1. **LibADB Android**: Provides direct ADB functionality without requiring Shizuku
 2. **Local Connection**: Connects to the device's own ADB daemon via localhost:5555
-3. **pm install Command**: Uses the Android package manager's install command via ADB
-4. **No Root Required**: Works on any device with wireless debugging support (Android 11+)
+3. **Remote Target Support**: Can connect to either localhost or one other Android device over IP
+4. **pm install Command**: Uses the Android package manager's install command via ADB
+5. **No Root Required**: Works on any device with wireless debugging support (Android 11+)
 
 ## Technical Details
 

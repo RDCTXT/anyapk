@@ -44,7 +44,11 @@ object UpdateManager {
 
             // Install the APK via ADB (same method used for regular installs)
             Log.d(TAG, "Installing update via ADB: ${apkFile.absolutePath}")
-            val installResult = AdbInstaller.install(context, apkFile.absolutePath)
+            val installResult = AdbInstaller.install(
+                context,
+                AdbTarget(mode = InstallMode.LOCALHOST),
+                apkFile.absolutePath
+            )
 
             installResult.onSuccess { message ->
                 Log.d(TAG, "Update installation started: $message")

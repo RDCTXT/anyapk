@@ -1,66 +1,231 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center">
-
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/status_checking"
-        android:textSize="16sp"
-        android:gravity="center"
-        android:layout_marginBottom="32dp"
-        android:lineSpacingExtra="4dp" />
+    android:layout_height="match_parent">
 
     <LinearLayout
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
-        <Button
-            android:id="@+id/actionButton"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:id="@+id/targetSectionLabel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/btn_waiting"
-            android:minWidth="200dp"
-            android:layout_marginBottom="16dp" />
+            android:text="@string/target_section_title"
+            android:textStyle="bold"
+            android:textSize="18sp"
+            android:layout_marginBottom="12dp"
+            />
+
+        <RadioGroup
+            android:id="@+id/targetModeGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="12dp">
+
+            <RadioButton
+                android:id="@+id/localTargetRadio"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/target_mode_local" />
+
+            <RadioButton
+                android:id="@+id/remoteTargetRadio"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:text="@string/target_mode_remote" />
+        </RadioGroup>
+
+        <LinearLayout
+            android:id="@+id/remoteConfigContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:layout_marginBottom="20dp">
+
+            <EditText
+                android:id="@+id/remoteIpInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_remote_ip"
+                android:inputType="textUri"
+                android:singleLine="true" />
+
+            <EditText
+                android:id="@+id/remotePairingPortInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="@string/hint_remote_pairing_port"
+                android:inputType="number"
+                android:singleLine="true" />
+
+            <EditText
+                android:id="@+id/remoteAdbPortInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="@string/hint_remote_adb_port"
+                android:inputType="number"
+                android:singleLine="true" />
+
+            <Button
+                android:id="@+id/saveTargetButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/btn_save_target" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_checking"
+            android:textSize="16sp"
+            android:layout_marginBottom="20dp"
+            android:lineSpacingExtra="4dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginBottom="12dp">
+
+            <Button
+                android:id="@+id/actionButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/btn_waiting" />
+
+            <Button
+                android:id="@+id/refreshButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="12dp"
+                android:text="@string/btn_refresh" />
+        </LinearLayout>
 
         <Button
-            android:id="@+id/refreshButton"
+            android:id="@+id/testConnectionButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_test_connection"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/selectApkButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/btn_select_apk"
+            android:layout_marginTop="12dp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/toggleAdvancedButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/btn_toggle_advanced"
+            style="@style/Widget.Material3.Button.TextButton" />
+
+        <LinearLayout
+            android:id="@+id/advancedPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@android:color/transparent"
+            android:orientation="vertical"
+            android:padding="12dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/advancedSectionLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/advanced_section_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/advancedWarningText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/advanced_warning" />
+
+            <EditText
+                android:id="@+id/commandInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:hint="@string/hint_adb_command"
+                android:inputType="textMultiLine"
+                android:minLines="2"
+                android:gravity="top|start" />
+
+            <Button
+                android:id="@+id/runCommandButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/btn_run_command" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/disableAppCheckButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/btn_disable_app_check" />
+
+                <Button
+                    android:id="@+id/enableAppCheckButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="12dp"
+                    android:text="@string/btn_enable_app_check" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/advancedOutputLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/advanced_output_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/commandOutputText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="#22000000"
+                android:minLines="6"
+                android:padding="12dp"
+                android:text="@string/advanced_output_placeholder"
+                android:textIsSelectable="true" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/checkUpdateButton"
+            style="@style/Widget.Material3.Button.TextButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/btn_refresh"
-            android:minWidth="200dp"
-            android:layout_marginBottom="16dp" />
+            android:layout_marginTop="24dp"
+            android:text="@string/btn_check_updates" />
+
     </LinearLayout>
-
-    <Button
-        android:id="@+id/testConnectionButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Test Connection"
-        android:minWidth="200dp"
-        android:visibility="gone" />
-
-    <Button
-        android:id="@+id/selectApkButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="@string/btn_select_apk"
-        android:minWidth="200dp"
-        android:layout_marginTop="16dp"
-        android:visibility="gone" />
-
-    <Button
-        android:id="@+id/checkUpdateButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Check for Updates"
-        android:minWidth="200dp"
-        android:layout_marginTop="32dp"
-        style="@style/Widget.Material3.Button.TextButton" />
-
-</LinearLayout>
+</ScrollView>

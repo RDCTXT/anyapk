@@ -2,6 +2,25 @@
 <resources>
     <string name="app_name">anyapk</string>
     <string name="status_checking">Checking ADB connection status…</string>
+    <string name="target_section_title">Install Target</string>
+    <string name="target_mode_local">This device</string>
+    <string name="target_mode_remote">Other device</string>
+    <string name="hint_remote_ip">Remote device IP address</string>
+    <string name="hint_remote_pairing_port">Remote pairing port (optional)</string>
+    <string name="hint_remote_adb_port">Remote ADB port</string>
+    <string name="btn_save_target">Save Remote Target</string>
+    <string name="btn_test_connection">Test Connection</string>
+    <string name="btn_check_updates">Check for Updates</string>
+    <string name="btn_toggle_advanced">Show Advanced</string>
+    <string name="btn_toggle_advanced_hide">Hide Advanced</string>
+    <string name="advanced_section_title">Advanced ADB Commands</string>
+    <string name="advanced_warning">Advanced: these commands run ADB shell actions on the current target and may change device behavior.</string>
+    <string name="hint_adb_command">Shell command (without adb shell)</string>
+    <string name="btn_run_command">Run Command</string>
+    <string name="btn_disable_app_check">Disable App Check</string>
+    <string name="btn_enable_app_check">Enable App Check</string>
+    <string name="advanced_output_title">Command Output</string>
+    <string name="advanced_output_placeholder">No command output yet.</string>
     <string name="status_ready">✅ Ready to Install APKs\n\nOpen any APK file and select anyapk</string>
     <string name="status_needs_dev_mode">⚠️ Setup Required\n\nStep 1: Enable Developer Options\n  • Open Settings → About Phone\n  • Tap \"Build Number\" 7 times\n  • You\'ll see \"You are now a developer!\"\n\nStep 2: Enable Wireless Debugging\n  • Go to Settings → Developer Options\n  • Enable \"Wireless debugging\"\n\nStep 3: Pair with anyapk\n  • Tap \"Enter Pairing Code\" below</string>
     <string name="status_needs_pairing">⚠️ Pairing Required\n\nSteps:\n1. Tap \"Enter Pairing Code\" below\n2. Go to Settings → Developer Options → Wireless Debugging\n3. Tap \"Pair device with pairing code\"\n4. Swipe down from top to see the notification\n5. Tap \"Reply\" and enter: CODE PORT\n   Example: 123456 37829</string>
@@ -22,6 +41,10 @@
     <string name="installing">Installing…</string>
     <string name="install_success">✅ Installed successfully!</string>
     <string name="install_failed">❌ Install failed: %s</string>
+    <string name="install_failed_before_adb">Install failed before ADB returned an error message.</string>
+    <string name="install_failed_open_apk">Couldn\'t open the selected APK file.</string>
+    <string name="install_failed_copy_apk">Failed while copying the selected APK.</string>
+    <string name="install_failed_empty_apk">The copied APK is empty.</string>
     <string name="error_no_apk">No APK provided</string>
     <string name="error_adb_not_running">Shizuku not running</string>
     <string name="error_no_permission">ADB permission not granted</string>

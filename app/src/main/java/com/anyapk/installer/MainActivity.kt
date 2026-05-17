@@ -7,7 +7,11 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.View
 import android.widget.Button
+import android.widget.EditText
+import android.widget.RadioButton
+import android.widget.RadioGroup
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +20,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -27,10 +32,29 @@ class MainActivity : AppCompatActivity() {
     private lateinit var testConnectionButton: Button
     private lateinit var selectApkButton: Button
     private lateinit var checkUpdateButton: Button
+    private lateinit var targetModeGroup: RadioGroup
+    private lateinit var localTargetRadio: RadioButton
+    private lateinit var remoteTargetRadio: RadioButton
+    private lateinit var remoteConfigContainer: View
+    private lateinit var remoteIpInput: EditText
+    private lateinit var remotePairingPortInput: EditText
+    private lateinit var remoteAdbPortInput: EditText
+    private lateinit var saveTargetButton: Button
+    private lateinit var toggleAdvancedButton: Button
+    private lateinit var advancedPanel: View
+    private lateinit var commandInput: EditText
+    private lateinit var runCommandButton: Button
+    private lateinit var disableAppCheckButton: Button
+    private lateinit var enableAppCheckButton: Button
+    private lateinit var commandOutputText: TextView
+
+    private var activeTarget: AdbTarget = AdbTarget()
+    private var statusCheckJob: Job? = null
+    private var statusRequestVersion: Long = 0
+    private var advancedVisible: Boolean = false
 
     private val selectApkLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let {
-            // Launch InstallActivity with the selected APK
             val intent = Intent(this, InstallActivity::class.java).apply {
                 data = it
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -49,6 +73,25 @@ class MainActivity : AppCompatActivity() {
         testConnectionButton = findViewById(R.id.testConnectionButton)
         selectApkButton = findViewById(R.id.selectApkButton)
         checkUpdateButton = findViewById(R.id.checkUpdateButton)
+        targetModeGroup = findViewById(R.id.targetModeGroup)
+        localTargetRadio = findViewById(R.id.localTargetRadio)
+        remoteTargetRadio = findViewById(R.id.remoteTargetRadio)
+        remoteConfigContainer = findViewById(R.id.remoteConfigContainer)
+        remoteIpInput = findViewById(R.id.remoteIpInput)
+        remotePairingPortInput = findViewById(R.id.remotePairingPortInput)
+        remoteAdbPortInput = findViewById(R.id.remoteAdbPortInput)
+        saveTargetButton = findViewById(R.id.saveTargetButton)
+        toggleAdvancedButton = findViewById(R.id.toggleAdvancedButton)
+        advancedPanel = findViewById(R.id.advancedPanel)
+        commandInput = findViewById(R.id.commandInput)
+        runCommandButton = findViewById(R.id.runCommandButton)
+        disableAppCheckButton = findViewById(R.id.disableAppCheckButton)
+        enableAppCheckButton = findViewById(R.id.enableAppCheckButton)
+        commandOutputText = findViewById(R.id.commandOutputText)
+
+        applyTargetToInputs(AdbTargetStore.getTarget(this))
+        updateAdvancedVisibility()
+        updateTargetUiState(activeTarget)
 
         refreshButton.setOnClickListener {
             checkStatus()
@@ -65,6 +108,34 @@ class MainActivity : AppCompatActivity() {
         checkUpdateButton.setOnClickListener {
             checkForUpdates()
         }
+
+        saveTargetButton.setOnClickListener {
+            persistTargetFromInputs(showToast = true)
+            checkStatus()
+        }
+
+        toggleAdvancedButton.setOnClickListener {
+            advancedVisible = !advancedVisible
+            updateAdvancedVisibility()
+        }
+
+        targetModeGroup.setOnCheckedChangeListener { _, _ ->
+            persistTargetFromInputs(showToast = false)
+            updateTargetUiState(currentUiTarget())
+            checkStatus()
+        }
+
+        runCommandButton.setOnClickListener {
+            executeAdvancedCommand(commandInput.text.toString())
+        }
+
+        disableAppCheckButton.setOnClickListener {
+            executeAdvancedCommand("pm disable-user com.android.packageinstaller")
+        }
+
+        enableAppCheckButton.setOnClickListener {
+            executeAdvancedCommand("pm enable com.android.packageinstaller")
+        }
     }
 
     override fun onResume() {
@@ -73,22 +144,134 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkStatus() {
-        lifecycleScope.launch {
+        val target = persistTargetFromInputs(showToast = false)
+        val requestVersion = ++statusRequestVersion
+        updateTargetUiState(target)
+        statusCheckJob?.cancel()
+        statusCheckJob = lifecycleScope.launch {
             val status = withContext(Dispatchers.IO) {
-                AdbInstaller.getConnectionStatus(this@MainActivity)
+                AdbInstaller.getConnectionStatus(this@MainActivity, target)
             }
 
-            val isDeveloperModeEnabled = isDeveloperOptionsEnabled()
-            val hasNotificationPermission = checkNotificationPermission()
+            if (!shouldApplyStatusResult(target, requestVersion)) {
+                return@launch
+            }
 
-            when (status) {
-                AdbInstaller.ConnectionStatus.CONNECTED -> {
-                    showConnectedState()
+            val isDeveloperModeEnabled = if (target.isLocalhost()) isDeveloperOptionsEnabled() else true
+            val hasNotificationPermission = checkNotificationPermission()
+            updateTargetUiState(target)
+            checkUpdateButton.isEnabled = target.isLocalhost()
+
+            when (status.state) {
+                AdbInstaller.ConnectionState.CONNECTED -> {
+                    showConnectedState(target)
+                }
+                AdbInstaller.ConnectionState.NEEDS_AUTHORIZATION -> {
+                    showAuthorizationState(target, status.message)
                 }
                 else -> {
-                    showSetupChecklist(isDeveloperModeEnabled, hasNotificationPermission)
+                    showSetupChecklist(target, status, isDeveloperModeEnabled, hasNotificationPermission)
                 }
             }
+        }
+    }
+
+    private fun applyTargetToInputs(target: AdbTarget) {
+        activeTarget = target
+        if (target.isLocalhost()) {
+            localTargetRadio.isChecked = true
+        } else {
+            remoteTargetRadio.isChecked = true
+        }
+        remoteIpInput.setText(target.remoteIp)
+        remotePairingPortInput.setText(target.remotePairingPort?.toString().orEmpty())
+        remoteAdbPortInput.setText(target.remoteAdbPort?.toString().orEmpty())
+        updateTargetUiState(activeTarget)
+    }
+
+    private fun persistTargetFromInputs(showToast: Boolean): AdbTarget {
+        val target = AdbTarget(
+            mode = if (remoteTargetRadio.isChecked) InstallMode.REMOTE else InstallMode.LOCALHOST,
+            remoteIp = remoteIpInput.text.toString().trim(),
+            remotePairingPort = remotePairingPortInput.text.toString().trim().toIntOrNull(),
+            remoteAdbPort = remoteAdbPortInput.text.toString().trim().toIntOrNull()
+        )
+        AdbTargetStore.saveTarget(this, target)
+        activeTarget = target
+        updateTargetUiState(target)
+        if (showToast) {
+            Toast.makeText(
+                this,
+                if (target.isLocalhost()) "Using this device as the install target." else "Saved remote target ${target.displayName()}.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        return target
+    }
+
+    private fun currentUiTarget(): AdbTarget {
+        return AdbTarget(
+            mode = if (remoteTargetRadio.isChecked) InstallMode.REMOTE else InstallMode.LOCALHOST,
+            remoteIp = remoteIpInput.text.toString().trim(),
+            remotePairingPort = remotePairingPortInput.text.toString().trim().toIntOrNull(),
+            remoteAdbPort = remoteAdbPortInput.text.toString().trim().toIntOrNull()
+        )
+    }
+
+    private fun shouldApplyStatusResult(expectedTarget: AdbTarget, requestVersion: Long): Boolean {
+        if (requestVersion != statusRequestVersion) {
+            return false
+        }
+        val currentTarget = currentUiTarget()
+        return currentTarget.mode == expectedTarget.mode &&
+            currentTarget.remoteIp == expectedTarget.remoteIp &&
+            currentTarget.remotePairingPort == expectedTarget.remotePairingPort &&
+            currentTarget.remoteAdbPort == expectedTarget.remoteAdbPort
+    }
+
+    private fun updateTargetUiState(target: AdbTarget) {
+        remoteConfigContainer.visibility = if (remoteTargetRadio.isChecked) View.VISIBLE else View.GONE
+        checkUpdateButton.alpha = if (target.isLocalhost()) 1f else 0.5f
+    }
+
+    private fun updateAdvancedVisibility() {
+        advancedPanel.visibility = if (advancedVisible) View.VISIBLE else View.GONE
+        toggleAdvancedButton.text = if (advancedVisible) {
+            getString(R.string.btn_toggle_advanced_hide)
+        } else {
+            getString(R.string.btn_toggle_advanced)
+        }
+    }
+
+    private fun executeAdvancedCommand(command: String) {
+        val trimmedCommand = command.trim()
+        if (trimmedCommand.isEmpty()) {
+            commandOutputText.text = "Enter a command to run."
+            return
+        }
+
+        val target = persistTargetFromInputs(showToast = false)
+        val targetLabel = target.displayName()
+
+        commandOutputText.text = "Running on $targetLabel...\n$trimmedCommand"
+        runCommandButton.isEnabled = false
+        disableAppCheckButton.isEnabled = false
+        enableAppCheckButton.isEnabled = false
+
+        lifecycleScope.launch {
+            val result = AdbInstaller.runShellCommand(this@MainActivity, target, trimmedCommand)
+            result.onSuccess { output ->
+                commandOutputText.text = "[$targetLabel]\n$ $trimmedCommand\n\n$output"
+            }
+            result.onFailure { error ->
+                val message = error.message ?: "Command execution failed."
+                commandOutputText.text = "[$targetLabel]\n$ $trimmedCommand\n\n$message"
+                Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+            }
+
+            runCommandButton.isEnabled = true
+            disableAppCheckButton.isEnabled = true
+            enableAppCheckButton.isEnabled = true
         }
     }
 
@@ -104,54 +287,53 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showConnectedState() {
-        statusText.text = "✅ Ready to Install APKs\n\nYou're all set! Open any APK file and select anyapk to install."
+    private fun showConnectedState(target: AdbTarget) {
+        statusText.text = buildString {
+            append("Ready to install APKs.\n\n")
+            append("Current target: ${target.displayName()}\n")
+            if (!target.isLocalhost()) {
+                append("ADB: ${target.remoteIp}:${target.remoteAdbPort}\n")
+            }
+            append("\nOpen any APK file and select anyapk, or use the built-in picker below.")
+        }
         actionButton.isEnabled = false
         actionButton.text = getString(R.string.btn_connected)
-        testConnectionButton.visibility = Button.GONE
-        refreshButton.visibility = Button.GONE
-        selectApkButton.visibility = Button.VISIBLE
+        testConnectionButton.visibility = View.GONE
+        refreshButton.visibility = View.VISIBLE
+        selectApkButton.visibility = View.VISIBLE
     }
 
-    private fun showSetupChecklist(devModeEnabled: Boolean, notificationPermission: Boolean) {
-        val step1 = if (devModeEnabled) "✅" else "⬜"
-        val step2 = if (notificationPermission) "✅" else "⬜"
-        val step3 = if (devModeEnabled && notificationPermission) "⬜" else "⚪"
-
-        val message = buildString {
-            append("Setup Progress:\n\n")
-
-            // Step 1: Developer Options
-            append("$step1 Step 1: Enable Developer Options\n")
-            if (!devModeEnabled) {
-                append("   • Open Settings → About Phone\n")
-                append("   • Tap \"Build Number\" 7 times\n\n")
-            } else {
-                append("   Complete!\n\n")
+    private fun showSetupChecklist(
+        target: AdbTarget,
+        report: AdbInstaller.ConnectionReport,
+        devModeEnabled: Boolean,
+        notificationPermission: Boolean
+    ) {
+        statusText.text = if (target.isLocalhost()) {
+            buildString {
+                append("Current target: this device\n\n")
+                append("1. Enable Developer Options")
+                if (!devModeEnabled) {
+                    append(" by opening Settings -> About Phone and tapping Build Number 7 times.")
+                }
+                append("\n2. Grant notification permission so anyapk can collect the pairing code.")
+                append("\n3. Start pairing and reply with: CODE PORT")
+                append("\n\n")
+                append(report.message ?: "Local wireless ADB is not ready yet.")
             }
-
-            // Step 2: Notification Permission
-            append("$step2 Step 2: Grant Notification Permission\n")
-            if (!notificationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                append("   • Required to enter pairing codes\n")
-                append("   • Tap button below to grant\n\n")
-            } else {
-                append("   Complete!\n\n")
-            }
-
-            // Step 3: Pairing
-            append("$step3 Step 3: Pair with Wireless ADB\n")
-            if (devModeEnabled && notificationPermission) {
-                append("   • Tap \"Start Pairing\" below\n")
-                append("   • Enter code from Settings notification\n")
-            } else {
-                append("   Complete previous steps first\n")
+        } else {
+            buildString {
+                append("Current target: ${target.displayName()}\n")
+                append("Pairing port: ${target.remotePairingPort?.toString() ?: "optional / not set"}\n")
+                append("ADB port: ${target.remoteAdbPort?.toString() ?: "not set"}\n\n")
+                append("1. Enter the remote device IP and ADB port above.")
+                append("\n2. If the device supports pairing codes, also enter the pairing port.")
+                append("\n3. Watches that only show IP:5555 can usually use Test Connection directly without pairing.")
+                append("\n\n")
+                append(report.message ?: "Remote wireless ADB is not ready yet.")
             }
         }
 
-        statusText.text = message
-
-        // Configure button based on current step
         when {
             !notificationPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU -> {
                 actionButton.text = "Grant Notification Permission"
@@ -160,14 +342,7 @@ class MainActivity : AppCompatActivity() {
                     requestNotificationPermission()
                 }
             }
-            devModeEnabled && notificationPermission -> {
-                actionButton.text = "Start Pairing"
-                actionButton.isEnabled = true
-                actionButton.setOnClickListener {
-                    showPairingDialog()
-                }
-            }
-            !devModeEnabled -> {
+            target.isLocalhost() && !devModeEnabled -> {
                 actionButton.text = "Open Settings"
                 actionButton.isEnabled = true
                 actionButton.setOnClickListener {
@@ -178,10 +353,32 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
+            target.isLocalhost() || target.canAttemptPairing() -> {
+                actionButton.text = "Start Pairing"
+                actionButton.isEnabled = true
+                actionButton.setOnClickListener {
+                    startPairingFlow(target)
+                }
+            }
+            target.isRemoteConfiguredForConnection() -> {
+                actionButton.text = getString(R.string.btn_test_connection)
+                actionButton.isEnabled = true
+                actionButton.setOnClickListener {
+                    testConnection()
+                }
+            }
+            else -> {
+                actionButton.text = "Save Remote Target"
+                actionButton.isEnabled = true
+                actionButton.setOnClickListener {
+                    persistTargetFromInputs(showToast = true)
+                    checkStatus()
+                }
+            }
         }
 
-        testConnectionButton.visibility = Button.GONE
-        selectApkButton.visibility = Button.GONE
+        testConnectionButton.visibility = View.GONE
+        selectApkButton.visibility = View.GONE
     }
 
     private fun isDeveloperOptionsEnabled(): Boolean {
@@ -197,34 +394,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showPairingDialog() {
-        // Start pairing input service with RemoteInput notification
-        val serviceIntent = Intent(this, PairingInputService::class.java)
+    private fun startPairingFlow(target: AdbTarget) {
+        val persistedTarget = persistTargetFromInputs(showToast = false)
+        if (!persistedTarget.canAttemptPairing()) {
+            Toast.makeText(
+                this,
+                "Enter a pairing port first, or use Test Connection for single-port devices like watches.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        val serviceIntent = Intent(this, PairingInputService::class.java).apply {
+            putExtra(PairingInputService.EXTRA_TARGET_MODE, persistedTarget.mode.name)
+            putExtra(PairingInputService.EXTRA_TARGET_DISPLAY, persistedTarget.displayName())
+            putExtra(
+                PairingInputService.EXTRA_REQUIRE_PORT_INPUT,
+                persistedTarget.isLocalhost() || persistedTarget.remotePairingPort == null
+            )
+        }
         startService(serviceIntent)
 
-        // Try to open Developer Options directly
-        try {
-            val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-            startActivity(intent)
-        } catch (e: Exception) {
-            // If that fails, just open main settings
+        if (target.isLocalhost()) {
             try {
-                val intent = Intent(Settings.ACTION_SETTINGS)
+                val intent = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
                 startActivity(intent)
-            } catch (ex: Exception) {
+            } catch (e: Exception) {
                 Toast.makeText(
                     this,
                     "Please open Settings → Developer Options → Wireless Debugging manually",
                     Toast.LENGTH_LONG
                 ).show()
             }
+            Toast.makeText(
+                this,
+                "Open Wireless Debugging on this device, tap Pair device, then reply in the notification with CODE PORT.",
+                Toast.LENGTH_LONG
+            ).show()
+        } else {
+            Toast.makeText(
+                this,
+                "On the other device, open Wireless Debugging and Pair device. Then enter the pairing code in the notification here.",
+                Toast.LENGTH_LONG
+            ).show()
         }
-
-        Toast.makeText(
-            this,
-            "Go to Wireless Debugging, tap 'Pair device', then swipe down and enter the code in the notification",
-            Toast.LENGTH_LONG
-        ).show()
     }
 
     private fun requestNotificationPermission() {
@@ -263,36 +475,67 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    fun refreshStatus() {
-        checkStatus()
-    }
-
-    fun showTestConnectionButton() {
-        testConnectionButton.visibility = Button.VISIBLE
-        statusText.text = "⚠️ Authorization Required\n\nTap 'Test Connection' below to trigger the USB debugging authorization prompt. Make sure to check 'Always allow' and tap 'Allow'."
+    private fun showAuthorizationState(target: AdbTarget, message: String?) {
+        statusText.text = buildString {
+            append("Authorization required for ${target.displayName()}.\n\n")
+            append(message ?: "Use Test Connection to retry the ADB authorization flow.")
+        }
+        if (target.isLocalhost() || target.canAttemptPairing()) {
+            actionButton.text = "Start Pairing"
+            actionButton.isEnabled = true
+            actionButton.setOnClickListener {
+                startPairingFlow(target)
+            }
+        } else {
+            actionButton.text = "Save Remote Target"
+            actionButton.isEnabled = true
+            actionButton.setOnClickListener {
+                persistTargetFromInputs(showToast = true)
+                checkStatus()
+            }
+        }
+        testConnectionButton.visibility = View.VISIBLE
+        testConnectionButton.isEnabled = true
+        testConnectionButton.text = getString(R.string.btn_test_connection)
+        selectApkButton.visibility = View.GONE
     }
 
     private fun testConnection() {
         testConnectionButton.isEnabled = false
         testConnectionButton.text = "Testing..."
+        val target = persistTargetFromInputs(showToast = false)
 
         lifecycleScope.launch {
-            val result = AdbInstaller.testConnection(this@MainActivity)
+            val result = AdbInstaller.testConnection(this@MainActivity, target)
 
             result.onSuccess {
-                Toast.makeText(this@MainActivity, "✅ Connection authorized! You can now install APKs.", Toast.LENGTH_LONG).show()
-                refreshStatus()
+                Toast.makeText(
+                    this@MainActivity,
+                    "Connection confirmed for ${target.displayName()}.",
+                    Toast.LENGTH_LONG
+                ).show()
+                checkStatus()
             }
 
             result.onFailure { error ->
-                Toast.makeText(this@MainActivity, "❌ Authorization failed: ${error.message}\n\nMake sure you tapped 'Always allow' on the prompt.", Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    this@MainActivity,
+                    "Connection test failed: ${error.message}",
+                    Toast.LENGTH_LONG
+                ).show()
                 testConnectionButton.isEnabled = true
-                testConnectionButton.text = "Test Connection"
+                testConnectionButton.text = getString(R.string.btn_test_connection)
             }
         }
     }
 
     private fun checkForUpdates() {
+        val target = persistTargetFromInputs(showToast = false)
+        if (!target.isLocalhost()) {
+            Toast.makeText(this, "App self-updates only work while 'This device' is selected.", Toast.LENGTH_LONG).show()
+            return
+        }
+
         checkUpdateButton.isEnabled = false
         checkUpdateButton.text = "Checking..."
 

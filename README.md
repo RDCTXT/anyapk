@@ -1,3 +1,8 @@
+# Fork of AnyAPK
+Google had the slogan "Don't be evil" ... it's a joke now. I just needed an app that allows me to upload `.apk` files to my smartwatch, but Google decided to enshittify the flow.
+
+I added the functionality of installing APKs via LAN, along with more debug messages and a way to send custom ADB commands.
+
 # anyapk
 
 **Bypass Google And Install Any APK You Want On The Device You Own.**
@@ -33,6 +38,7 @@ If you believe software should serve users rather than control them, anyapk is f
 - **One-time setup**: Pair once using wireless debugging, use forever
 - **No root required**: Uses Android's built-in wireless ADB
 - **No external dependencies**: Everything runs locally on your device
+- **Dual target modes**: Install on this device or one other Android device over IP
 - **System-wide integration**: Register as an APK handler to install from any file manager
 - **Direct file selection**: Built-in file picker if you don't have a file manager handy
 
@@ -75,6 +81,8 @@ If you can't install the APK directly (due to existing restrictions), use ADB fr
 
 ### First-Time Setup
 
+#### Mode 1: Install on This Device
+
 1. **Enable Developer Options** (if not already enabled):
    - Open **Settings → About Phone**
    - Tap **Build Number** 7 times
@@ -87,26 +95,42 @@ If you can't install the APK directly (due to existing restrictions), use ADB fr
 
 3. **Pair anyapk** (one-time only):
    - Open anyapk
-   - Tap **Enter Pairing Code**
+   - Select **This device**
+   - Tap **Start Pairing**
    - Follow the split-screen instructions:
      1. Tap the **Recent Apps** button (square icon)
      2. Long-press on **Settings**, select **"Open in split screen view"**
      3. Select **anyapk** for the other half of the screen
      4. In Settings: **Developer Options → Wireless Debugging**
      5. Tap **"Pair device with pairing code"**
-     6. Enter the pairing code and port in anyapk
-     7. Tap **Pair**
+     6. Enter the pairing code and port in the anyapk notification
 
 4. **Authorize the connection**:
-   - You'll see an "Allow USB debugging?" prompt
+   - If you see an "Allow USB debugging?" prompt
    - Check **"Always allow from this computer"**
    - Tap **Allow**
 
-That's it! anyapk is now permanently connected and ready to use.
+#### Mode 2: Install on Another Device
+
+1. On the destination device, enable **Wireless debugging** in **Developer Options**.
+2. In anyapk, select **Other device**.
+3. Enter:
+   - the destination device IP address
+   - the destination ADB port shown on the Wireless Debugging screen
+   - the destination pairing port, if the device supports pairing codes
+4. Save the remote target.
+5. If the target is a phone/tablet using Android's pairing-code flow:
+   - tap **Start Pairing**
+   - enter the pairing code from the destination device in the notification
+6. If the target is a watch or another single-port device that only shows `IP:5555`:
+   - leave pairing port empty
+   - tap **Test Connection** instead of pairing
+
+After that, anyapk will send installs to the selected target device until you switch modes.
 
 ### Installing APK Files
 
-Once paired, installing APK files is effortless:
+Once paired, installing APK files is effortless. Installs always go to the currently selected target:
 
 #### Method 1: From Any File Manager
 1. Open any APK file in your file manager, browser, or download folder
@@ -123,7 +147,12 @@ Once paired, installing APK files is effortless:
 
 ## How It Works
 
-anyapk uses LibADB Android to establish a local ADB connection via wireless debugging. Once paired, it maintains the connection and can install any APK file using the ADB install protocol - the same method developers use, but running entirely on your device.
+anyapk uses LibADB Android to establish an ADB connection via wireless debugging. Once paired, it can either:
+
+- connect to the local device over localhost, or
+- connect to one remote Android device over its wireless ADB IP and port
+
+It installs APKs using the ADB install protocol - the same method developers use, but triggered directly from the app.
 
 No internet connection required. No cloud services. No remote servers. Just you and your device.
 
@@ -157,6 +186,12 @@ Your activity is your business, not ours.
 - Make sure wireless debugging is actually ON in Developer Options
 - Try restarting anyapk
 - Verify you're on WiFi (wireless debugging requires WiFi)
+
+**Remote device won't connect:**
+- Double-check the remote IP address
+- Make sure the ADB port matches the one shown on the remote device's Wireless Debugging page
+- On phones/tablets, pairing port and ADB port are different; both may need to be entered
+- On watches that only show `IP:5555`, pairing port may be unnecessary and `Test Connection` is the correct next step
 
 **"Stream closed" error during installation:**
 - Close and reopen anyapk to refresh the connection

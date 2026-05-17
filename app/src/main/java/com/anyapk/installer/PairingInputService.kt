@@ -10,31 +10,33 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.RemoteInput
-import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 
 class PairingInputService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var requirePortInput: Boolean = true
+    private var targetDisplay: String = "this device"
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIFICATION_ID, createPairingNotification())
+        createNotificationChannel()
     }
 
     private fun createPairingNotification(): Notification {
-        createNotificationChannel()
-
-        // Create single RemoteInput for both code and port
         val remoteInput = RemoteInput.Builder(KEY_PAIRING_INPUT)
-            .setLabel("Code and Port (e.g., 123456 37829)")
+            .setLabel(
+                if (requirePortInput) {
+                    "Code and Port (e.g., 123456 37829)"
+                } else {
+                    "Pairing Code (e.g., 123456)"
+                }
+            )
             .build()
 
-        // Create intent to handle the input
         val replyIntent = Intent(this, PairingInputReceiver::class.java).apply {
             action = ACTION_PAIRING_INPUT
         }
@@ -46,13 +48,23 @@ class PairingInputService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
         )
 
-        // Create notification with reply action
+        val shortText = if (requirePortInput) {
+            "Reply with CODE PORT for $targetDisplay"
+        } else {
+            "Reply with the pairing code for $targetDisplay"
+        }
+        val longText = if (requirePortInput) {
+            "Open Settings -> Wireless Debugging on $targetDisplay.\n\nThen tap Reply and enter: CODE PORT\n\nExample: 123456 37829\n\nIf the target only shows IP:5555, skip pairing and use Test Connection instead."
+        } else {
+            "Open Wireless Debugging on $targetDisplay and note the pairing code.\n\nThen tap Reply and enter just the code.\n\nThe saved pairing port will be used automatically."
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("Enter Pairing Code")
-            .setContentText("Format: CODE PORT (e.g., 123456 37829)")
+            .setContentTitle("Pair with $targetDisplay")
+            .setContentText(shortText)
             .setStyle(NotificationCompat.BigTextStyle()
-                .bigText("Open Settings → Wireless Debugging to see the code and port.\n\nThen tap 'Reply' below and enter: CODE PORT\n\nExample: 123456 37829"))
+                .bigText(longText))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setOngoing(true)
             .addAction(
@@ -82,6 +94,9 @@ class PairingInputService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        requirePortInput = intent?.getBooleanExtra(EXTRA_REQUIRE_PORT_INPUT, true) ?: true
+        targetDisplay = intent?.getStringExtra(EXTRA_TARGET_DISPLAY) ?: "this device"
+        startForeground(NOTIFICATION_ID, createPairingNotification())
         return START_STICKY
     }
 
@@ -99,5 +114,8 @@ class PairingInputService : Service() {
         const val NOTIFICATION_ID = 3001
         const val KEY_PAIRING_INPUT = "pairing_input"
         const val ACTION_PAIRING_INPUT = "com.anyapk.installer.PAIRING_INPUT"
+        const val EXTRA_TARGET_MODE = "target_mode"
+        const val EXTRA_TARGET_DISPLAY = "target_display"
+        const val EXTRA_REQUIRE_PORT_INPUT = "require_port_input"
     }
 }
