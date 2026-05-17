@@ -17,7 +17,7 @@ At a high level, the app provides:
 - Package name: `com.anyapk.installer`
 - Minimum Android version: Android 11 / API 30
 - Target SDK: 34
-- Current app version in source: `0.0.5` (`versionCode = 5`)
+- Current app version in source: `0.0.6` (`versionCode = 6`)
 - Main requirement: wireless debugging must be available and enabled
 
 ## App Entry Points
